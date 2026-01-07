@@ -503,9 +503,33 @@ def play_match(
         judge_final: Optional[str] = None
 
         try:
-            # Setup players + judge
-            setup_one(eb, boardsize, komi)
-            setup_one(ew, boardsize, komi)
+            # Setup players + judge - attribute failures to the failing engine
+            try:
+                setup_one(eb, boardsize, komi)
+            except GTPProtocolError as ex:
+                winner_color = "W"
+                winner_engine = ew.name
+                reason = f"{eb.name} failed during setup (timeout/protocol error): {ex}"
+                raise
+            except Exception as ex:
+                winner_color = "W"
+                winner_engine = ew.name
+                reason = f"{eb.name} failed during setup: {ex}"
+                raise
+
+            try:
+                setup_one(ew, boardsize, komi)
+            except GTPProtocolError as ex:
+                winner_color = "B"
+                winner_engine = eb.name
+                reason = f"{ew.name} failed during setup (timeout/protocol error): {ex}"
+                raise
+            except Exception as ex:
+                winner_color = "B"
+                winner_engine = eb.name
+                reason = f"{ew.name} failed during setup: {ex}"
+                raise
+
             setup_one(judge, boardsize, komi)
 
             if use_time:
@@ -544,10 +568,15 @@ def play_match(
                         pass
 
                 t0 = time.time()
+                genmove_error_type = None
                 try:
                     ok, payload = current.send(f"genmove {to_play}")
+                except GTPProtocolError as ex:
+                    ok, payload = False, str(ex)
+                    genmove_error_type = "timeout/protocol"
                 except Exception as ex:
                     ok, payload = False, str(ex)
+                    genmove_error_type = "error"
                 elapsed = time.time() - t0
 
                 if use_time:
@@ -563,7 +592,10 @@ def play_match(
                 if not ok:
                     winner_color = oppc
                     winner_engine = opponent.name
-                    reason = f"{current.name} genmove failure/timeout: {payload}"
+                    if genmove_error_type == "timeout/protocol":
+                        reason = f"{current.name} timeout or GTP protocol error: {payload}"
+                    else:
+                        reason = f"{current.name} genmove failure: {payload}"
                     move_count += 1
                     break
 
@@ -621,6 +653,12 @@ def play_match(
                         reason = f"{opponent.name} rejected play {to_play} {sync_move}: {p2}"
                         move_count += 1
                         break
+                except GTPProtocolError as ex:
+                    winner_color = to_play
+                    winner_engine = current.name
+                    reason = f"{opponent.name} timeout or GTP protocol error during play-sync: {ex}"
+                    move_count += 1
+                    break
                 except Exception as ex:
                     winner_color = to_play
                     winner_engine = current.name
@@ -758,24 +796,46 @@ def play_match(
             )
 
         except Exception as ex:
-            # Any setup crash etc: forfeit the side we can't reliably determine -> mark as judge/driver failure
-            results.append(
-                GameResult(
-                    game_index=gi,
-                    black_slot=black_slot,
-                    white_slot=white_slot,
-                    engine_black=eb.name,
-                    engine_white=ew.name,
-                    winner_slot=None,
-                    winner_color=None,
-                    winner_engine=None,
-                    reason=f"referee error: {ex}",
-                    moves=move_count,
-                    komi=komi,
-                    judge=JudgeReport(judge_cmd=judge_cmd, judge_name=judge.name, judge_final_score=judge_final),
-                    engine_reports=engine_reports,
+            # If winner was already determined (e.g., setup failure), use that info
+            # Otherwise mark as referee error with no winner
+            if winner_color is not None and winner_engine is not None:
+                winner_slot = slot_for_color(black_slot, white_slot, winner_color)
+                results.append(
+                    GameResult(
+                        game_index=gi,
+                        black_slot=black_slot,
+                        white_slot=white_slot,
+                        engine_black=eb.name,
+                        engine_white=ew.name,
+                        winner_slot=winner_slot,
+                        winner_color=winner_color,
+                        winner_engine=winner_engine,
+                        reason=reason,
+                        moves=move_count,
+                        komi=komi,
+                        judge=JudgeReport(judge_cmd=judge_cmd, judge_name=judge.name, judge_final_score=judge_final),
+                        engine_reports=engine_reports,
+                    )
                 )
-            )
+            else:
+                # True referee/driver failure - no winner can be determined
+                results.append(
+                    GameResult(
+                        game_index=gi,
+                        black_slot=black_slot,
+                        white_slot=white_slot,
+                        engine_black=eb.name,
+                        engine_white=ew.name,
+                        winner_slot=None,
+                        winner_color=None,
+                        winner_engine=None,
+                        reason=f"referee error: {ex}",
+                        moves=move_count,
+                        komi=komi,
+                        judge=JudgeReport(judge_cmd=judge_cmd, judge_name=judge.name, judge_final_score=judge_final),
+                        engine_reports=engine_reports,
+                    )
+                )
         finally:
             eb.quit()
             ew.quit()
@@ -906,4 +966,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
