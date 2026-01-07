@@ -10,6 +10,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -800,6 +801,8 @@ def summarize_json(results: List[GameResult], black_cmd: str, white_cmd: str) ->
         "overall_by_slot": {BLACK_SLOT: slot_wins[BLACK_SLOT], WHITE_SLOT: slot_wins[WHITE_SLOT], "draws": draws},
         "engine_misreports_detected": misreports,
         "results": [asdict(r) for r in results],
+        "timestamp_utc": datetime.datetime.utcnow().isoformat() + "Z",
+        "replay_command": " ".join([shlex.quote(arg) for arg in sys.argv]),
     }
     return json.dumps(payload, indent=2, sort_keys=True)
 
